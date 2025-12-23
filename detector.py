@@ -2,49 +2,76 @@ from ultralytics import YOLO
 import cv2
 import numpy as np
 
+# Presets optimized for CPU-only systems (AMD Ryzen 3 5300U, no GPU)
+# Note: yolov8m-seg and larger models crash on this system
+PRESETS = {
+    'fast': {
+        'model': 'yolov8n-seg.pt',
+        'imgsz': 480,
+        'confidence': 0.20,
+        'description': 'Fastest - lower accuracy'
+    },
+    'balanced': {
+        'model': 'yolov8s-seg.pt',
+        'imgsz': 640,
+        'confidence': 0.15,
+        'description': 'Best working model for this system'
+    }
+}
+
+
 class HumanDetector:
     """
-    Human detector optimized for long-distance detection.
+    Human detector optimized for CPU-only systems.
+    Full polygon mask matching (instance segmentation) is preserved.
     
-    Improvements over default:
-    - Uses larger model (yolov8m-seg) for better accuracy
-    - Lower confidence threshold to catch distant/small humans
-    - Higher input resolution for better detail preservation
-    - Optional CLAHE preprocessing for improved contrast
+    Presets:
+    - 'fast': yolov8n-seg @ 480px
+    - 'balanced': yolov8s-seg @ 640px [RECOMMENDED - works on your system]
     """
     
     def __init__(self, 
-                 model_path='yolov8x-seg.pt',  # Largest model for maximum accuracy
-                 confidence=0.10,               # Very low threshold for distant objects
-                 imgsz=1280,                    # Maximum resolution
-                 use_preprocessing=True):       # Enable CLAHE preprocessing
+                 preset='balanced',
+                 model_path=None,
+                 confidence=None,
+                 imgsz=None,
+                 use_preprocessing=True):
         """
         Initialize the human detector.
         
         Args:
-            model_path: YOLO model to use. Options:
-                - 'yolov8n-seg.pt' (fastest, least accurate)
-                - 'yolov8s-seg.pt' (fast, moderate accuracy)
-                - 'yolov8m-seg.pt' (balanced - recommended)
-                - 'yolov8l-seg.pt' (slower, high accuracy)
-                - 'yolov8x-seg.pt' (slowest, highest accuracy)
-            confidence: Confidence threshold (0.0-1.0). Lower = more detections.
-            imgsz: Input image size. Higher = better for small objects but slower.
-            use_preprocessing: Whether to apply CLAHE contrast enhancement.
+            preset: One of 'fast', 'balanced', or 'accurate'
+            model_path: Override model (optional)
+            confidence: Override confidence threshold (optional)
+            imgsz: Override input resolution (optional)
+            use_preprocessing: Enable CLAHE contrast enhancement
         """
-        self.model = YOLO(model_path)
-        self.target_class_id = 0  # 'person' in COCO dataset
-        self.confidence = confidence
-        self.imgsz = imgsz
+        # Load preset defaults
+        if preset not in PRESETS:
+            print(f"[Warning] Unknown preset '{preset}', using 'balanced'")
+            preset = 'balanced'
+        
+        config = PRESETS[preset]
+        
+        # Allow overrides
+        self.model_path = model_path or config['model']
+        self.confidence = confidence if confidence is not None else config['confidence']
+        self.imgsz = imgsz or config['imgsz']
         self.use_preprocessing = use_preprocessing
+        
+        # Load model with CPU optimization
+        print(f"[Detector] Loading {self.model_path} ({preset} preset)...")
+        self.model = YOLO(self.model_path)
+        self.target_class_id = 0  # 'person' in COCO dataset
         
         # Initialize CLAHE for contrast enhancement
         self.clahe = cv2.createCLAHE(clipLimit=2.0, tileGridSize=(8, 8))
         
-        print(f"[Detector] Model: {model_path}")
-        print(f"[Detector] Confidence threshold: {confidence}")
-        print(f"[Detector] Input resolution: {imgsz}")
-        print(f"[Detector] Preprocessing (CLAHE): {use_preprocessing}")
+        print(f"[Detector] ✓ Model: {self.model_path}")
+        print(f"[Detector] ✓ Preset: {preset} - {config['description']}")
+        print(f"[Detector] ✓ Confidence: {self.confidence}")
+        print(f"[Detector] ✓ Resolution: {self.imgsz}px")
+        print(f"[Detector] ✓ Preprocessing (CLAHE): {use_preprocessing}")
 
     def preprocess(self, frame):
         """
@@ -77,14 +104,17 @@ class HumanDetector:
         # Apply preprocessing if enabled
         processed_frame = self.preprocess(frame)
         
-        # Run YOLO inference with optimized parameters
+        # Run YOLO inference with CPU-optimized parameters
         results = self.model(
             processed_frame, 
             verbose=False, 
             classes=[self.target_class_id], 
             retina_masks=True,
             conf=self.confidence,
-            imgsz=self.imgsz
+            imgsz=self.imgsz,
+            device='cpu',              # Explicit CPU
+            half=False,                # Full precision (FP16 needs GPU)
+            agnostic_nms=True          # Better NMS for overlapping detections
         )
         
         detections = []
@@ -97,8 +127,7 @@ class HumanDetector:
             boxes = result.boxes.xyxy.cpu().numpy()
             confs = result.boxes.conf.cpu().numpy()
             
-            # Masks are returned as an object. We want the data.
-            # retina_masks=True ensures masks are scaled to original image size
+            # Masks with retina_masks=True are scaled to original image size
             masks = result.masks.data.cpu().numpy()
             
             for i, box in enumerate(boxes):

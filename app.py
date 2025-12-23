@@ -21,6 +21,11 @@ roi_manager = None
 frame_width = 640
 frame_height = 480
 
+# Frame skip configuration for CPU optimization
+PROCESS_EVERY_N_FRAMES = 2  # Process every Nth frame
+frame_counter = 0
+last_processed_frame = None
+
 def init_camera():
     """Initialize camera and detector."""
     global camera, detector, roi_manager, frame_width, frame_height
@@ -35,8 +40,8 @@ def init_camera():
         if ret:
             frame_height, frame_width = frame.shape[:2]
         
-        # Initialize detector
-        detector = HumanDetector()
+        # Initialize detector with CPU-optimized preset
+        detector = HumanDetector(preset='balanced')
         
         # Initialize ROI (center area - same as main.py)
         polygon_points = [
@@ -94,7 +99,8 @@ def process_frame(frame):
     return frame
 
 def generate_frames():
-    """Generator for video streaming."""
+    """Generator for video streaming with frame skipping for CPU optimization."""
+    global frame_counter, last_processed_frame
     init_camera()
     
     while True:
@@ -102,8 +108,15 @@ def generate_frames():
         if not ret:
             break
         
-        # Process frame with detection
-        processed_frame = process_frame(frame)
+        frame_counter += 1
+        
+        # Only run expensive detection every N frames
+        if frame_counter % PROCESS_EVERY_N_FRAMES == 0 or last_processed_frame is None:
+            processed_frame = process_frame(frame)
+            last_processed_frame = processed_frame.copy()
+        else:
+            # Reuse last processed frame overlays but update base frame
+            processed_frame = last_processed_frame
         
         # Encode as JPEG
         ret, buffer = cv2.imencode('.jpg', processed_frame, [cv2.IMWRITE_JPEG_QUALITY, 80])
